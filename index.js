@@ -306,7 +306,7 @@ async function obtenerAnosDisponibles(message, userId, tipo, identificador) {
             datos: { 
                 [tipo]: identificador,
                 anos: anos,
-                tecnicoInfo: userId // Solo para técnico
+                tecnicoInfo: userId 
             }
         });
         
