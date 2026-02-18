@@ -1,5 +1,5 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone');
@@ -33,7 +33,10 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor',
+            '--disable-font-subpixel-positioning'
         ]
     },
     webVersionCache: {
@@ -306,7 +309,7 @@ async function obtenerAnosDisponibles(message, userId, tipo, identificador) {
             datos: { 
                 [tipo]: identificador,
                 anos: anos,
-                tecnicoInfo: userId // Solo para técnico
+                tecnicoInfo: userId
             }
         });
         
@@ -2971,7 +2974,7 @@ async function enviarMensajeProgramado(programacion) {
     }
 }
 
-client.on('qr', qr => {
+client.on('qr', async qr => {
     console.clear();
     console.log('╔══════════════════════════════════════════════════════════╗');
     console.log('║                    ESCANEA EL QR                         ║');
@@ -2983,7 +2986,13 @@ client.on('qr', qr => {
     console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
-    qrcode.generate(qr, { small: true });
+    try {
+        const qrImage = await qrcode.toString(qr, { type: 'terminal', small: true });
+        console.log(qrImage);
+    } catch (err) {
+        console.log('Error generando QR:', err);
+        qrcode.generate(qr, { small: true });
+    }
     
     console.log(`\n📅 ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
     console.log('📍 América/El_Salvador');
