@@ -1,0 +1,25 @@
+[
+  {
+    "archivoInfo": {
+      "ruta": "C:\\Users\\marro\\OneDrive\\Escritorio\\botwhatsapp3\\media\\imagenes\\imagen_13593605099625@lid_1771283144855.jpg",
+      "tipo": "imagen",
+      "mimetype": "image/jpeg",
+      "nombre": "imagen_13593605099625@lid_1771283144855.jpg"
+    },
+    "imagenPath": "C:\\Users\\marro\\OneDrive\\Escritorio\\botwhatsapp3\\media\\imagenes\\imagen_13593605099625@lid_1771283144855.jpg",
+    "mensaje": "Este es el listado de las marialuisa",
+    "horas": [
+      "17:08"
+    ],
+    "frecuencia": "diario",
+    "fechaInicio": "2026-02-16T23:06:56.852Z",
+    "fechaFin": null,
+    "grupos": [
+      "120363407363728918@g.us"
+    ],
+    "fechaCreacion": "2026-02-16T23:06:56.852Z",
+    "creadoPor": "13593605099625@lid",
+    "ultimoEnvio": "2026-02-16T23:08:39.748Z",
+    "enviosHoy": []
+  }
+]
