@@ -1,5 +1,5 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone');
@@ -2971,7 +2971,7 @@ async function enviarMensajeProgramado(programacion) {
     }
 }
 
-client.on('qr', qr => {
+client.on('qr', async qr => {
     console.clear();
     console.log('╔══════════════════════════════════════════════════════════╗');
     console.log('║                    ESCANEA EL QR                         ║');
@@ -2983,7 +2983,18 @@ client.on('qr', qr => {
     console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
-    qrcode.generate(qr, { small: true });
+    try {
+        const qrText = await QRCode.toString(qr, { 
+            type: 'terminal',
+            small: true,
+            width: 2,
+            margin: 1
+        });
+        console.log(qrText);
+    } catch (err) {
+        console.error('Error generando QR:', err);
+        console.log('QR (texto):', qr);
+    }
     
     console.log(`\n📅 ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
     console.log('📍 América/El_Salvador');
