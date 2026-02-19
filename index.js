@@ -2920,7 +2920,11 @@ client.on('qr', qr => {
     console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
+    // Generar QR más pequeño y legible
     qrcode.generate(qr, { small: true });
+    
+    console.log('\n🔗 O puedes usar este enlace:');
+    console.log(`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qr)}`);
     
     console.log(`\n📅 ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
     console.log('📍 América/El_Salvador');
