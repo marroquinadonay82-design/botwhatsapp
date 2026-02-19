@@ -240,13 +240,11 @@ async function consultarReclamosCalidad() {
 
         for (const doc of documents) {
             const fields = doc.fields || {};
-            const createTime = doc.createTime || doc.createdAt;
             
-            let fechaCreacion = null;
-            if (fields.createdAt && fields.createdAt.timestampValue) {
-                fechaCreacion = new Date(fields.createdAt.timestampValue);
-            } else if (createTime) {
-                fechaCreacion = new Date(createTime);
+            // Obtener la fecha del reclamo del campo 'date' (formato YYYY-MM-DD)
+            let fechaReclamo = null;
+            if (fields.date && fields.date.stringValue) {
+                fechaReclamo = fields.date.stringValue; // Viene como "2024-12-19"
             }
 
             const reclamo = {
@@ -256,35 +254,32 @@ async function consultarReclamosCalidad() {
                 type: fields.type?.stringValue || 'Sin tipo',
                 reason: fields.reason?.stringValue || 'Sin descripción',
                 status: fields.status?.stringValue || 'Nuevo',
-                solution: fields.solution?.stringValue || '',
-                fechaCreacion: fechaCreacion
+                solution: fields.solution?.stringValue || ''
             };
             reclamos.push(reclamo);
 
-            // Actualizar fecha más reciente
-            if (fechaCreacion && (!fechaMasReciente || fechaCreacion > fechaMasReciente)) {
-                fechaMasReciente = fechaCreacion;
+            // Actualizar fecha más reciente usando el campo 'date'
+            if (fechaReclamo && (!fechaMasReciente || fechaReclamo > fechaMasReciente)) {
+                fechaMasReciente = fechaReclamo;
                 reclamoMasReciente = reclamo;
             }
         }
 
         // Calcular días sin reclamos desde el último reclamo hasta hoy
         let diasSinReclamos = 0;
-        const hoy = new Date();
-        hoy.setHours(0, 0, 0, 0);
-
+        const hoy = moment().tz(TIMEZONE).format('YYYY-MM-DD');
+        
         if (fechaMasReciente) {
-            const ultimoReclamo = new Date(fechaMasReciente);
-            ultimoReclamo.setHours(0, 0, 0, 0);
-            const diferenciaMs = hoy - ultimoReclamo;
-            diasSinReclamos = Math.floor(diferenciaMs / (1000 * 60 * 60 * 24));
+            const fechaUltimo = moment(fechaMasReciente, 'YYYY-MM-DD');
+            const fechaHoy = moment(hoy, 'YYYY-MM-DD');
+            diasSinReclamos = fechaHoy.diff(fechaUltimo, 'days');
         }
 
         // Ordenar reclamos por fecha (más recientes primero)
         const reclamosOrdenados = reclamos.sort((a, b) => {
-            if (!a.fechaCreacion) return 1;
-            if (!b.fechaCreacion) return -1;
-            return b.fechaCreacion - a.fechaCreacion;
+            if (a.fecha < b.fecha) return 1;
+            if (a.fecha > b.fecha) return -1;
+            return 0;
         });
 
         // Preparar mensaje
