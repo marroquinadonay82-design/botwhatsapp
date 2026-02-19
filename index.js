@@ -15,6 +15,15 @@ const FIREBASE_CONFIG = {
     databaseURL: "https://seguridadterritorial-64f0f-default-rtdb.firebaseio.com/"
 };
 
+// Configuración para Reclamos de Calidad (Firestore)
+const FIREBASE_RECLAMOS_CONFIG = {
+    apiKey: "AIzaSyAneea8jq-qIoymTG909zP76OjcFx7ufa8",
+    authDomain: "reclamo-39ff3.firebaseapp.com",
+    projectId: "reclamo-39ff3",
+    messagingSenderId: "443679031726",
+    appId: "1:443679031726:web:568838f29089d4fb74483f"
+};
+
 const userStates = new Map();
 const scheduledMessages = [];
 let availableGroups = [];
@@ -199,6 +208,176 @@ const MESES = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ];
+
+// Función para consultar reclamos de calidad desde Firestore
+async function consultarReclamosCalidad() {
+    try {
+        console.log('🔍 Consultando reclamos de calidad desde Firestore...');
+        
+        const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_RECLAMOS_CONFIG.projectId}/databases/(default)/documents/quality_claims?orderBy=createdAt desc`;
+        
+        const response = await axios.get(firestoreUrl, {
+            timeout: 15000,
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const documents = response.data.documents || [];
+        
+        if (documents.length === 0) {
+            return {
+                success: true,
+                sinReclamos: true,
+                mensaje: "🎉 *¡FELICIDADES!*\n\nNo hay reclamos de calidad registrados en el sistema.\n\n📊 *Estadísticas:*\n• Total reclamos: 0\n• Días sin reclamos: N/A (sin historial)\n\n🔗 *Sistema de reclamos:* https://reclamo-39ff3.web.app/"
+            };
+        }
+
+        // Procesar los reclamos
+        const reclamos = [];
+        let fechaMasAntigua = null;
+        let reclamoMasReciente = null;
+        let fechaMasReciente = null;
+
+        for (const doc of documents) {
+            const fields = doc.fields || {};
+            const createTime = doc.createTime || doc.createdAt;
+            
+            let fechaCreacion = null;
+            if (fields.createdAt && fields.createdAt.timestampValue) {
+                fechaCreacion = new Date(fields.createdAt.timestampValue);
+            } else if (createTime) {
+                fechaCreacion = new Date(createTime);
+            }
+
+            const reclamo = {
+                id: doc.name.split('/').pop(),
+                fecha: fields.date?.stringValue || 'Sin fecha',
+                lines: fields.lines?.stringValue || 'Sin área',
+                type: fields.type?.stringValue || 'Sin tipo',
+                reason: fields.reason?.stringValue || 'Sin descripción',
+                status: fields.status?.stringValue || 'Nuevo',
+                solution: fields.solution?.stringValue || '',
+                fechaCreacion: fechaCreacion
+            };
+            reclamos.push(reclamo);
+
+            // Actualizar fecha más antigua
+            if (fechaCreacion) {
+                if (!fechaMasAntigua || fechaCreacion < fechaMasAntigua) {
+                    fechaMasAntigua = fechaCreacion;
+                }
+                if (!fechaMasReciente || fechaCreacion > fechaMasReciente) {
+                    fechaMasReciente = fechaCreacion;
+                    reclamoMasReciente = reclamo;
+                }
+            }
+        }
+
+        // Calcular días sin reclamos
+        let diasSinReclamos = 0;
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+
+        if (fechaMasReciente) {
+            const ultimoReclamo = new Date(fechaMasReciente);
+            ultimoReclamo.setHours(0, 0, 0, 0);
+            const diferenciaMs = hoy - ultimoReclamo;
+            diasSinReclamos = Math.floor(diferenciaMs / (1000 * 60 * 60 * 24));
+        }
+
+        // Calcular días totales desde el primer registro
+        let diasTotales = 0;
+        if (fechaMasAntigua) {
+            const primerReclamo = new Date(fechaMasAntigua);
+            primerReclamo.setHours(0, 0, 0, 0);
+            const diferenciaMs = hoy - primerReclamo;
+            diasTotales = Math.floor(diferenciaMs / (1000 * 60 * 60 * 24));
+        }
+
+        // Contar reclamos por estado
+        const reclamosPorEstado = {
+            Nuevo: reclamos.filter(r => r.status === 'Nuevo').length,
+            'En proceso': reclamos.filter(r => r.status === 'En proceso').length,
+            Resuelto: reclamos.filter(r => r.status === 'Resuelto').length
+        };
+
+        // Preparar mensaje
+        let resultado = "📋 *SISTEMA DE RECLAMOS DE CALIDAD*\n\n";
+        
+        if (diasSinReclamos > 0) {
+            resultado += `🎉 *¡FELICIDADES!* Llevamos *${diasSinReclamos}* día${diasSinReclamos !== 1 ? 's' : ''} sin reclamos de calidad.\n\n`;
+        } else if (diasSinReclamos === 0) {
+            resultado += "⚠️ *ATENCIÓN:* Hoy se registró un reclamo de calidad.\n\n";
+        } else {
+            resultado += "📊 *ESTADÍSTICAS DE RECLAMOS*\n\n";
+        }
+
+        if (reclamoMasReciente) {
+            resultado += `📅 *Último reclamo:* ${reclamoMasReciente.fecha}\n`;
+            resultado += `📍 *Área/Línea:* ${reclamoMasReciente.lines}\n`;
+            resultado += `📌 *Tipo:* ${reclamoMasReciente.type}\n`;
+            resultado += `📝 *Descripción:* ${reclamoMasReciente.reason.substring(0, 100)}${reclamoMasReciente.reason.length > 100 ? '...' : ''}\n`;
+            resultado += `📊 *Estado:* ${reclamoMasReciente.status}\n\n`;
+        }
+
+        resultado += `📊 *ESTADÍSTICAS GENERALES:*\n`;
+        resultado += `• Total reclamos: ${reclamos.length}\n`;
+        resultado += `• Días desde primer reclamo: ${diasTotales}\n`;
+        resultado += `• Días sin reclamos: ${diasSinReclamos}\n\n`;
+
+        resultado += `📈 *RECLAMOS POR ESTADO:*\n`;
+        resultado += `• 🆕 Nuevos: ${reclamosPorEstado.Nuevo}\n`;
+        resultado += `• ⚙️ En proceso: ${reclamosPorEstado['En proceso']}\n`;
+        resultado += `• ✅ Resueltos: ${reclamosPorEstado.Resuelto}\n\n`;
+
+        resultado += `📋 *ÚLTIMOS 5 RECLAMOS:*\n\n`;
+        
+        const ultimosReclamos = reclamos.slice(0, 5);
+        ultimosReclamos.forEach((reclamo, index) => {
+            resultado += `${index + 1}. *Fecha:* ${reclamo.fecha}\n`;
+            resultado += `   *Área:* ${reclamo.lines}\n`;
+            resultado += `   *Tipo:* ${reclamo.type}\n`;
+            resultado += `   *Estado:* ${reclamo.status}\n`;
+            resultado += `   *Descripción:* ${reclamo.reason.substring(0, 50)}${reclamo.reason.length > 50 ? '...' : ''}\n\n`;
+        });
+
+        resultado += `🔗 *Sistema de reclamos:* https://reclamo-39ff3.web.app/\n`;
+        resultado += `⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}`;
+
+        return {
+            success: true,
+            sinReclamos: false,
+            reclamos: reclamos,
+            estadisticas: {
+                total: reclamos.length,
+                diasSinReclamos: diasSinReclamos,
+                diasTotales: diasTotales,
+                porEstado: reclamosPorEstado
+            },
+            mensaje: resultado
+        };
+
+    } catch (error) {
+        console.error("Error en consultarReclamosCalidad:", error.message);
+        
+        let mensajeError = "❌ *ERROR AL CONSULTAR RECLAMOS DE CALIDAD*\n\n";
+        mensajeError += "No se pudo conectar con la base de datos de reclamos.\n\n";
+        mensajeError += "🔗 *Enlace alternativo:* https://reclamo-39ff3.web.app/\n";
+        mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
+        mensajeError += "💡 *Posibles causas:*\n";
+        mensajeError += "• Problemas de conexión a internet\n";
+        mensajeError += "• El servidor de Firebase puede estar temporalmente fuera de línea\n";
+        mensajeError += "• La base de datos podría no tener datos\n\n";
+        mensajeError += "📞 *Contacta al administrador del sistema*";
+        
+        return {
+            success: false,
+            error: error.message,
+            mensaje: mensajeError
+        };
+    }
+}
 
 async function obtenerChecklistSeguridad(message, userId) {
     const menuOpciones = `✅ *CHECKLIST DE SEGURIDAD*\n\n¿Qué deseas verificar?\n\n1️⃣ - Grupos\n2️⃣ - Técnicos\n\n*Envía el número de la opción (1-2)*\nO envía *cancelar* para regresar al menú principal.`;
@@ -2321,6 +2500,15 @@ async function manejarSkapOUTS(message, userId) {
     );
 }
 
+async function manejarReclamosCalidad(message, userId) {
+    await message.reply("🔍 Consultando reclamos de calidad...");
+    
+    const resultado = await consultarReclamosCalidad();
+    await message.reply(resultado.mensaje);
+    
+    await enviarMenu(message);
+}
+
 async function enviarBienvenidaGrupo(chat) {
     try {
         const mensajeBienvenida = 
@@ -2333,6 +2521,7 @@ async function enviarBienvenidaGrupo(chat) {
             `• Consultar semáforo de territorios 🚦\n` +
             `• Consultar información SKAP 📋\n` +
             `• Acceder a checklists de seguridad ✅\n` +
+            `• Consultar reclamos de calidad 📊\n` +
             `• Y mucho más...\n\n` +
             `*⚠️ IMPORTANTE:*\n` +
             `Solo responderé cuando uses el comando */menu* o */menú* primero.\n\n` +
@@ -2739,7 +2928,7 @@ async function enviarMenu(message) {
         `2️⃣ - *Guardian* 🛡️\n` +
         `3️⃣ - *Checklist de seguridad* ✅\n` +
         `4️⃣ - *Semáforo de territorio* 🚦\n` +
-        `5️⃣ - *Agua* 💧\n` +
+        `5️⃣ - *Reclamos de calidad* 📋\n` +
         `6️⃣ - *Energía* ⚡\n` +
         `7️⃣ - *CIP Jarabe terminado*\n` +
         `8️⃣ - *CIP Jarabe simple*\n` +
@@ -2754,9 +2943,6 @@ async function manejarOpcionMenu(message, opcion) {
     const links = {
         1: "https://ab-inbev.acadia.sysalli.com/documents?filter=lang-eql:es-mx&page=1&pagesize=50",
         2: "https://guardian.ab-inbev.com/home",
-        3: "checklist",
-        4: "semáforo",
-        5: "https://jarabeterminado.web.app/",
         6: "https://energia2-7e868.web.app/",
         7: "https://cijarabe2.web.app/",
         8: "https://cip-jarabesimple.web.app/"
@@ -2770,7 +2956,9 @@ async function manejarOpcionMenu(message, opcion) {
         await message.reply("⏳ Consultando semáforo de territorio...");
         const resultado = await obtenerSemaforoTerritorio();
         await message.reply(resultado);
-    } else if (opcion >= 5 && opcion <= 8) {
+    } else if (opcion === 5) {
+        await manejarReclamosCalidad(message, message.from);
+    } else if (opcion >= 6 && opcion <= 8) {
         await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
     } else if (opcion === 9) {
         await iniciarProgramacion(message);
