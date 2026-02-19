@@ -1,5 +1,5 @@
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const QRCode = require('qrcode');
+const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone');
@@ -1524,55 +1524,6 @@ async function buscarSkapOUTS(codigoEmpleado) {
     }
 }
 
-async function buscarEnPaginaDirecta(codigoEmpleado, tipo) {
-    try {
-        console.log(`🔍 Búsqueda alternativa en HTML para ${tipo}: ${codigoEmpleado}`);
-        
-        const url = tipo === 'ILC' ? 'https://skapjarabe.web.app/usuario.html' : 'https://skapjarabe.web.app/usuario2.html';
-        
-        const response = await axios.get(url, {
-            timeout: 15000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        });
-        
-        const $ = cheerio.load(response.data);
-        
-        const codigoBusqueda = codigoEmpleado.trim();
-        const paginaCompleta = response.data;
-        
-        if (!paginaCompleta.includes(codigoBusqueda)) {
-            return `❌ *NO ENCONTRADO - ${tipo}*\n\n` +
-                   `El código *${codigoBusqueda}* no fue encontrado en la página.\n\n` +
-                   `🔗 *URL:* ${url}\n` +
-                   `⏰ *Hora:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}`;
-        }
-        
-        console.log(`✅ Código ${codigoBusqueda} encontrado en HTML de ${tipo}`);
-        
-        let resultado = `📋 *INFORMACIÓN SKAP - ${tipo} (HTML)*\n\n`;
-        resultado += `🔢 *Código:* ${codigoBusqueda}\n`;
-        resultado += `✅ *Código encontrado en el sistema*\n\n`;
-        
-        resultado += `ℹ️ *Información disponible:*\n`;
-        resultado += `El código existe en la base de datos.\n`;
-        resultado += `Para ver información detallada, visita:\n`;
-        resultado += `${url}\n\n`;
-        
-        resultado += `⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
-        resultado += `🔗 *Fuente:* Página web directa`;
-        
-        return resultado;
-        
-    } catch (error) {
-        console.error(`Error en búsqueda HTML para ${tipo}:`, error.message);
-        return `❌ *ERROR BÚSQUEDA HTML - ${tipo}*\n\n` +
-               `Error técnico: ${error.message}\n\n` +
-               `🔗 *URL:* ${tipo === 'ILC' ? 'https://skapjarabe.web.app/usuario.html' : 'https://skapjarabe.web.app/usuario2.html'}`;
-    }
-}
-
 async function iniciarProgramacion(message) {
     const userId = message.from;
     
@@ -2534,14 +2485,7 @@ async function manejarEstadoUsuario(message, userId) {
             
         } catch (error) {
             console.error("Error en búsqueda ILC:", error.message);
-            
-            await message.reply("🔄 Intentando búsqueda alternativa en la página web...");
-            try {
-                const resultadoAlt = await buscarEnPaginaDirecta(codigoEmpleado, 'ILC');
-                await message.reply(resultadoAlt);
-            } catch (error2) {
-                await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
-            }
+            await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
         }
         
         userStates.delete(userId);
@@ -2565,14 +2509,7 @@ async function manejarEstadoUsuario(message, userId) {
             
         } catch (error) {
             console.error("Error en búsqueda OUTS:", error.message);
-            
-            await message.reply("🔄 Intentando búsqueda alternativa en la página web...");
-            try {
-                const resultadoAlt = await buscarEnPaginaDirecta(codigoEmpleado, 'OUTS');
-                await message.reply(resultadoAlt);
-            } catch (error2) {
-                await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
-            }
+            await message.reply("❌ Error en la búsqueda. Intenta nuevamente.");
         }
         
         userStates.delete(userId);
@@ -2971,7 +2908,7 @@ async function enviarMensajeProgramado(programacion) {
     }
 }
 
-client.on('qr', async qr => {
+client.on('qr', qr => {
     console.clear();
     console.log('╔══════════════════════════════════════════════════════════╗');
     console.log('║                    ESCANEA EL QR                         ║');
@@ -2983,18 +2920,7 @@ client.on('qr', async qr => {
     console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
-    try {
-        const qrText = await QRCode.toString(qr, { 
-            type: 'terminal',
-            small: true,
-            width: 2,
-            margin: 1
-        });
-        console.log(qrText);
-    } catch (err) {
-        console.error('Error generando QR:', err);
-        console.log('QR (texto):', qr);
-    }
+    qrcode.generate(qr, { small: true });
     
     console.log(`\n📅 ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
     console.log('📍 América/El_Salvador');
