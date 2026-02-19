@@ -229,15 +229,14 @@ async function consultarReclamosCalidad() {
             return {
                 success: true,
                 sinReclamos: true,
-                mensaje: "🎉 *¡FELICIDADES!*\n\nNo hay reclamos de calidad registrados en el sistema.\n\n📊 *Estadísticas:*\n• Total reclamos: 0\n• Días sin reclamos: N/A (sin historial)\n\n🔗 *Sistema de reclamos:* https://reclamo-39ff3.web.app/"
+                mensaje: "🎉 *¡FELICIDADES!*\n\nNo hay reclamos de calidad registrados en el sistema.\n\n🔗 *Sistema de reclamos:* https://reclamo-39ff3.web.app/"
             };
         }
 
         // Procesar los reclamos
         const reclamos = [];
-        let fechaMasAntigua = null;
-        let reclamoMasReciente = null;
         let fechaMasReciente = null;
+        let reclamoMasReciente = null;
 
         for (const doc of documents) {
             const fields = doc.fields || {};
@@ -262,19 +261,14 @@ async function consultarReclamosCalidad() {
             };
             reclamos.push(reclamo);
 
-            // Actualizar fecha más antigua
-            if (fechaCreacion) {
-                if (!fechaMasAntigua || fechaCreacion < fechaMasAntigua) {
-                    fechaMasAntigua = fechaCreacion;
-                }
-                if (!fechaMasReciente || fechaCreacion > fechaMasReciente) {
-                    fechaMasReciente = fechaCreacion;
-                    reclamoMasReciente = reclamo;
-                }
+            // Actualizar fecha más reciente
+            if (fechaCreacion && (!fechaMasReciente || fechaCreacion > fechaMasReciente)) {
+                fechaMasReciente = fechaCreacion;
+                reclamoMasReciente = reclamo;
             }
         }
 
-        // Calcular días sin reclamos
+        // Calcular días sin reclamos desde el último reclamo hasta hoy
         let diasSinReclamos = 0;
         const hoy = new Date();
         hoy.setHours(0, 0, 0, 0);
@@ -286,21 +280,12 @@ async function consultarReclamosCalidad() {
             diasSinReclamos = Math.floor(diferenciaMs / (1000 * 60 * 60 * 24));
         }
 
-        // Calcular días totales desde el primer registro
-        let diasTotales = 0;
-        if (fechaMasAntigua) {
-            const primerReclamo = new Date(fechaMasAntigua);
-            primerReclamo.setHours(0, 0, 0, 0);
-            const diferenciaMs = hoy - primerReclamo;
-            diasTotales = Math.floor(diferenciaMs / (1000 * 60 * 60 * 24));
-        }
-
-        // Contar reclamos por estado
-        const reclamosPorEstado = {
-            Nuevo: reclamos.filter(r => r.status === 'Nuevo').length,
-            'En proceso': reclamos.filter(r => r.status === 'En proceso').length,
-            Resuelto: reclamos.filter(r => r.status === 'Resuelto').length
-        };
+        // Ordenar reclamos por fecha (más recientes primero)
+        const reclamosOrdenados = reclamos.sort((a, b) => {
+            if (!a.fechaCreacion) return 1;
+            if (!b.fechaCreacion) return -1;
+            return b.fechaCreacion - a.fechaCreacion;
+        });
 
         // Preparar mensaje
         let resultado = "📋 *SISTEMA DE RECLAMOS DE CALIDAD*\n\n";
@@ -309,37 +294,26 @@ async function consultarReclamosCalidad() {
             resultado += `🎉 *¡FELICIDADES!* Llevamos *${diasSinReclamos}* día${diasSinReclamos !== 1 ? 's' : ''} sin reclamos de calidad.\n\n`;
         } else if (diasSinReclamos === 0) {
             resultado += "⚠️ *ATENCIÓN:* Hoy se registró un reclamo de calidad.\n\n";
-        } else {
-            resultado += "📊 *ESTADÍSTICAS DE RECLAMOS*\n\n";
         }
 
         if (reclamoMasReciente) {
             resultado += `📅 *Último reclamo:* ${reclamoMasReciente.fecha}\n`;
             resultado += `📍 *Área/Línea:* ${reclamoMasReciente.lines}\n`;
             resultado += `📌 *Tipo:* ${reclamoMasReciente.type}\n`;
-            resultado += `📝 *Descripción:* ${reclamoMasReciente.reason.substring(0, 100)}${reclamoMasReciente.reason.length > 100 ? '...' : ''}\n`;
-            resultado += `📊 *Estado:* ${reclamoMasReciente.status}\n\n`;
+            resultado += `📝 *Descripción:* ${reclamoMasReciente.reason}\n\n`;
         }
 
-        resultado += `📊 *ESTADÍSTICAS GENERALES:*\n`;
-        resultado += `• Total reclamos: ${reclamos.length}\n`;
-        resultado += `• Días desde primer reclamo: ${diasTotales}\n`;
-        resultado += `• Días sin reclamos: ${diasSinReclamos}\n\n`;
-
-        resultado += `📈 *RECLAMOS POR ESTADO:*\n`;
-        resultado += `• 🆕 Nuevos: ${reclamosPorEstado.Nuevo}\n`;
-        resultado += `• ⚙️ En proceso: ${reclamosPorEstado['En proceso']}\n`;
-        resultado += `• ✅ Resueltos: ${reclamosPorEstado.Resuelto}\n\n`;
-
-        resultado += `📋 *ÚLTIMOS 5 RECLAMOS:*\n\n`;
+        resultado += `📋 *TODOS LOS RECLAMOS REGISTRADOS:*\n\n`;
         
-        const ultimosReclamos = reclamos.slice(0, 5);
-        ultimosReclamos.forEach((reclamo, index) => {
+        reclamosOrdenados.forEach((reclamo, index) => {
             resultado += `${index + 1}. *Fecha:* ${reclamo.fecha}\n`;
             resultado += `   *Área:* ${reclamo.lines}\n`;
             resultado += `   *Tipo:* ${reclamo.type}\n`;
-            resultado += `   *Estado:* ${reclamo.status}\n`;
-            resultado += `   *Descripción:* ${reclamo.reason.substring(0, 50)}${reclamo.reason.length > 50 ? '...' : ''}\n\n`;
+            resultado += `   *Descripción:* ${reclamo.reason}\n`;
+            if (reclamo.solution && reclamo.solution !== '') {
+                resultado += `   *Solución:* ${reclamo.solution}\n`;
+            }
+            resultado += `\n`;
         });
 
         resultado += `🔗 *Sistema de reclamos:* https://reclamo-39ff3.web.app/\n`;
@@ -349,12 +323,6 @@ async function consultarReclamosCalidad() {
             success: true,
             sinReclamos: false,
             reclamos: reclamos,
-            estadisticas: {
-                total: reclamos.length,
-                diasSinReclamos: diasSinReclamos,
-                diasTotales: diasTotales,
-                porEstado: reclamosPorEstado
-            },
             mensaje: resultado
         };
 
