@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone');
 const axios = require('axios');
+const XLSX = require('xlsx');
 
 const TIMEZONE = 'America/El_Salvador';
 const ADMIN_CREDENTIALS = {
@@ -22,6 +23,17 @@ const FIREBASE_RECLAMOS_CONFIG = {
     projectId: "reclamo-39ff3",
     messagingSenderId: "443679031726",
     appId: "1:443679031726:web:568838f29089d4fb74483f"
+};
+
+// Configuración para Guardian
+const FIREBASE_GUARDIAN_CONFIG = {
+    apiKey: "AIzaSyC0ySpb88p6jf3v8S6zC9lUQhE3XBqHpCc",
+    authDomain: "reportesdeguardian.firebaseapp.com",
+    databaseURL: "https://reportesdeguardian-default-rtdb.firebaseio.com",
+    projectId: "reportesdeguardian",
+    storageBucket: "reportesdeguardian.appspot.com",
+    messagingSenderId: "109827856831",
+    appId: "1:109827856831:web:89a7b114733f7bc6e55fe5"
 };
 
 const userStates = new Map();
@@ -208,6 +220,227 @@ const MESES = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ];
+
+// Función para decodificar base64 a array de bytes
+function base64ToArrayBuffer(base64) {
+    const binaryString = Buffer.from(base64, 'base64').toString('binary');
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+}
+
+// Función para procesar Excel desde base64
+async function procesarExcelDesdeBase64(base64) {
+    try {
+        const buffer = Buffer.from(base64, 'base64');
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const datos = XLSX.utils.sheet_to_json(sheet);
+        return datos;
+    } catch (error) {
+        console.error("Error al procesar Excel:", error);
+        return [];
+    }
+}
+
+// Función para consultar datos de Guardian
+async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSeleccionado) {
+    try {
+        console.log(`🔍 Consultando Guardian para código: ${codigoEmpleado}, mes: ${mesSeleccionado}, año: ${anioSeleccionado}`);
+        
+        const mes = mesSeleccionado.toString().padStart(2, '0');
+        const anio = anioSeleccionado.toString();
+        
+        // Obtener todos los reportes
+        const snapshot = await axios.get(`${FIREBASE_GUARDIAN_CONFIG.databaseURL}/reportes.json`, {
+            timeout: 15000
+        });
+        
+        const reportes = snapshot.data || {};
+        let todosLosRegistros = [];
+        
+        // Procesar cada reporte
+        for (const [reporteId, reporte] of Object.entries(reportes)) {
+            // Filtrar por mes y año
+            if (reporte.mes === mes && reporte.anio === anio && reporte.archivo) {
+                try {
+                    const registros = await procesarExcelDesdeBase64(reporte.archivo);
+                    todosLosRegistros.push(...registros.map(r => ({
+                        ...r,
+                        tipoReporte: reporte.tipo
+                    })));
+                } catch (error) {
+                    console.error(`Error procesando reporte ${reporteId}:`, error);
+                }
+            }
+        }
+        
+        if (todosLosRegistros.length === 0) {
+            return {
+                success: false,
+                mensaje: `❌ *No hay registros* para el período ${mes}/${anio} en Guardian.`
+            };
+        }
+        
+        // Columnas específicas del Excel
+        const COLUMNA_NOMBRE = 'Observado por';
+        const COLUMNA_ID = 'ID del observador';
+        const COLUMNA_TIPO_USUARIO = 'Tipo de usuario del observador';
+        
+        // Filtrar registros del técnico por código
+        const registrosTecnico = todosLosRegistros.filter(reg => {
+            const idRegistro = reg[COLUMNA_ID] ? reg[COLUMNA_ID].toString().trim() : '';
+            return idRegistro.includes(codigoEmpleado) || codigoEmpleado.includes(idRegistro);
+        });
+        
+        if (registrosTecnico.length === 0) {
+            return {
+                success: false,
+                mensaje: `❌ *No se encontraron registros* para el código *${codigoEmpleado}* en ${mes}/${anio}`
+            };
+        }
+        
+        // Obtener información del usuario del primer registro
+        const primerRegistro = registrosTecnico[0];
+        const nombreTecnico = primerRegistro[COLUMNA_NOMBRE] || 'Desconocido';
+        const tipoUsuario = primerRegistro[COLUMNA_TIPO_USUARIO] || 'No especificado';
+        
+        // Contar por tipo de reporte
+        let condicionesInseguras = 0;
+        let reconocimientos = 0;
+        let accionesInseguras = 0;
+        let incidentesMenores = 0;
+        
+        registrosTecnico.forEach(reg => {
+            const tipo = reg.tipoReporte || '';
+            
+            if (tipo === 'condicion_insegura') {
+                condicionesInseguras++;
+            } else if (tipo === 'reconocimiento') {
+                reconocimientos++;
+            } else if (tipo === 'accion_insegura') {
+                accionesInseguras++;
+            } else if (tipo === 'incidentes_menores') {
+                incidentesMenores++;
+            }
+        });
+        
+        // Preparar resultado
+        let resultado = `📊 *INFORME GUARDIAN - JARABE*\n\n`;
+        resultado += `👤 *Técnico:* ${nombreTecnico}\n`;
+        resultado += `🔢 *Código:* ${codigoEmpleado}\n`;
+        resultado += `📌 *Tipo de usuario:* ${tipoUsuario}\n`;
+        resultado += `📅 *Período:* ${mes}/${anio}\n\n`;
+        
+        resultado += `📋 *REGISTROS DEL MES:*\n\n`;
+        
+        // Condiciones Inseguras
+        resultado += `🚨 *Condiciones Inseguras:* ${condicionesInseguras}\n`;
+        resultado += `   `;
+        for (let i = 0; i < 20; i++) {
+            if (i < condicionesInseguras) resultado += `█`;
+            else resultado += `░`;
+        }
+        resultado += `\n\n`;
+        
+        // Reconocimientos
+        resultado += `✅ *Reconocimientos:* ${reconocimientos}\n`;
+        resultado += `   `;
+        for (let i = 0; i < 20; i++) {
+            if (i < reconocimientos) resultado += `█`;
+            else resultado += `░`;
+        }
+        resultado += `\n\n`;
+        
+        // Acciones Inseguras
+        resultado += `⚠️ *Acciones Inseguras:* ${accionesInseguras}\n`;
+        resultado += `   `;
+        for (let i = 0; i < 20; i++) {
+            if (i < accionesInseguras) resultado += `█`;
+            else resultado += `░`;
+        }
+        resultado += `\n\n`;
+        
+        // Incidentes Menores
+        resultado += `📋 *Incidentes Menores:* ${incidentesMenores}\n`;
+        resultado += `   `;
+        for (let i = 0; i < 20; i++) {
+            if (i < incidentesMenores) resultado += `█`;
+            else resultado += `░`;
+        }
+        resultado += `\n\n`;
+        
+        // Resumen
+        resultado += `📊 *RESUMEN TOTAL:*\n`;
+        resultado += `• Condiciones Inseguras: ${condicionesInseguras}\n`;
+        resultado += `• Reconocimientos: ${reconocimientos}\n`;
+        resultado += `• Acciones Inseguras: ${accionesInseguras}\n`;
+        resultado += `• Incidentes Menores: ${incidentesMenores}\n`;
+        resultado += `• Total registros: ${registrosTecnico.length}\n\n`;
+        
+        resultado += `⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
+        resultado += `🔗 *Fuente:* Guardian Jarabe`;
+        
+        return {
+            success: true,
+            mensaje: resultado,
+            datos: {
+                nombre: nombreTecnico,
+                tipoUsuario: tipoUsuario,
+                condicionesInseguras,
+                reconocimientos,
+                accionesInseguras,
+                incidentesMenores,
+                total: registrosTecnico.length
+            }
+        };
+        
+    } catch (error) {
+        console.error("Error en consultarGuardian:", error.message);
+        
+        let mensajeError = "❌ *ERROR EN CONSULTA GUARDIAN*\n\n";
+        mensajeError += `No se pudo realizar la búsqueda para el código: ${codigoEmpleado}\n\n`;
+        mensajeError += "🔗 *Enlace:* https://reportesdeguardian.web.app/infor.html\n";
+        mensajeError += "⏰ *Hora:* " + moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm') + "\n\n";
+        
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            mensajeError += "💡 *Causa:* No se pudo conectar a la base de datos\n";
+            mensajeError += "• Verifica tu conexión a internet\n";
+            mensajeError += "• El servidor puede estar temporalmente fuera de línea\n";
+        } else {
+            mensajeError += `💡 *Causa:* ${error.message}\n`;
+        }
+        
+        mensajeError += "\n📞 *Contacta al supervisor de turno para más información*";
+        
+        return {
+            success: false,
+            mensaje: mensajeError
+        };
+    }
+}
+
+// Función para manejar la consulta de Guardian
+async function manejarGuardian(message, userId) {
+    userStates.set(userId, { 
+        estado: 'guardian_esperando_codigo',
+        datos: {}
+    });
+    
+    await message.reply(
+        `🛡️ *GUARDIAN - SISTEMA DE REPORTES*\n\n` +
+        `Para consultar tus reportes, necesito tu código de empleado.\n\n` +
+        `*Ejemplos:*\n` +
+        `• 76001111\n` +
+        `• 1111\n` +
+        `• 76009949\n\n` +
+        `*📝 IMPORTANTE:*\n` +
+        `Puedes buscar con el código completo o cualquier parte que coincida.\n\n` +
+        `Envía tu código ahora o escribe *cancelar* para regresar al menú.`
+    );
+}
 
 // Función para consultar reclamos de calidad desde Firestore
 async function consultarReclamosCalidad() {
@@ -2508,6 +2741,83 @@ async function manejarEstadoUsuario(message, userId) {
         return;
     }
     
+    // MANEJO DE ESTADOS DE GUARDIAN
+    if (estadoUsuario.estado === 'guardian_esperando_codigo') {
+        const codigo = message.body.trim();
+        
+        if (!codigo || codigo === '') {
+            await message.reply("❌ Por favor ingresa un código válido.");
+            return;
+        }
+        
+        estadoUsuario.datos.codigo = codigo;
+        estadoUsuario.estado = 'guardian_esperando_anio';
+        userStates.set(userId, estadoUsuario);
+        
+        const añoActual = moment().tz(TIMEZONE).year();
+        const años = [añoActual, añoActual - 1, añoActual - 2];
+        
+        let menuAños = `📅 *SELECCIONA EL AÑO*\n\n`;
+        años.forEach((año, index) => {
+            menuAños += `${index + 1}️⃣ - ${año}\n`;
+        });
+        
+        menuAños += `\n*Envía el número del año*\nO envía *cancelar* para regresar.`;
+        
+        await message.reply(menuAños);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'guardian_esperando_anio') {
+        const opcion = parseInt(texto);
+        
+        if (isNaN(opcion) || opcion < 1 || opcion > 3) {
+            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 3.");
+            return;
+        }
+        
+        const añoActual = moment().tz(TIMEZONE).year();
+        const años = [añoActual, añoActual - 1, añoActual - 2];
+        const añoSeleccionado = años[opcion - 1];
+        
+        estadoUsuario.datos.anio = añoSeleccionado;
+        estadoUsuario.estado = 'guardian_esperando_mes';
+        userStates.set(userId, estadoUsuario);
+        
+        let menuMeses = `📅 *SELECCIONA EL MES*\n\n`;
+        MESES.forEach((mes, index) => {
+            menuMeses += `${index + 1}️⃣ - ${mes}\n`;
+        });
+        
+        menuMeses += `\n*Envía el número del mes (1-12)*\nO envía *cancelar* para regresar.`;
+        
+        await message.reply(menuMeses);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'guardian_esperando_mes') {
+        const mes = parseInt(texto);
+        
+        if (isNaN(mes) || mes < 1 || mes > 12) {
+            await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 12.");
+            return;
+        }
+        
+        await message.reply("🔍 Consultando Guardian...");
+        
+        const resultado = await consultarGuardian(
+            estadoUsuario.datos.codigo,
+            mes,
+            estadoUsuario.datos.anio
+        );
+        
+        await message.reply(resultado.mensaje);
+        
+        userStates.delete(userId);
+        await enviarMenu(message);
+        return;
+    }
+    
     if (estadoUsuario.estado === 'checklist_menu_principal') {
         if (texto === '1') {
             await obtenerGruposDisponibles(message, userId);
@@ -2905,14 +3215,15 @@ async function enviarMenu(message) {
 async function manejarOpcionMenu(message, opcion) {
     const links = {
         1: "https://ab-inbev.acadia.sysalli.com/documents?filter=lang-eql:es-mx&page=1&pagesize=50",
-        2: "https://guardian.ab-inbev.com/home",
         6: "https://energia2-7e868.web.app/",
         7: "https://cijarabe2.web.app/",
         8: "https://cip-jarabesimple.web.app/"
     };
     
-    if (opcion >= 1 && opcion <= 2) {
+    if (opcion === 1) {
         await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
+    } else if (opcion === 2) {
+        await manejarGuardian(message, message.from);
     } else if (opcion === 3) {
         await obtenerChecklistSeguridad(message, message.from);
     } else if (opcion === 4) {
@@ -3071,7 +3382,6 @@ client.on('qr', qr => {
     console.log('║    4. ESPERA 10-20 segundos                              ║');
     console.log('╚══════════════════════════════════════════════════════════╝\n');
     
-    // Generar QR más pequeño y legible
     qrcode.generate(qr, { small: true });
     
     console.log('\n🔗 O puedes usar este enlace:');
