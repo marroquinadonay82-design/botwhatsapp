@@ -5,6 +5,7 @@ const path = require('path');
 const moment = require('moment-timezone');
 const axios = require('axios');
 const XLSX = require('xlsx');
+const PDFDocument = require('pdfkit');
 
 const TIMEZONE = 'America/El_Salvador';
 const ADMIN_CREDENTIALS = {
@@ -16,7 +17,6 @@ const FIREBASE_CONFIG = {
     databaseURL: "https://seguridadterritorial-64f0f-default-rtdb.firebaseio.com/"
 };
 
-// Configuración para Reclamos de Calidad (Firestore)
 const FIREBASE_RECLAMOS_CONFIG = {
     apiKey: "AIzaSyAneea8jq-qIoymTG909zP76OjcFx7ufa8",
     authDomain: "reclamo-39ff3.firebaseapp.com",
@@ -25,7 +25,6 @@ const FIREBASE_RECLAMOS_CONFIG = {
     appId: "1:443679031726:web:568838f29089d4fb74483f"
 };
 
-// Configuración para Guardian
 const FIREBASE_GUARDIAN_CONFIG = {
     apiKey: "AIzaSyC0ySpb88p6jf3v8S6zC9lUQhE3XBqHpCc",
     authDomain: "reportesdeguardian.firebaseapp.com",
@@ -36,9 +35,29 @@ const FIREBASE_GUARDIAN_CONFIG = {
     appId: "1:109827856831:web:89a7b114733f7bc6e55fe5"
 };
 
+const FIREBASE_CIP_CONFIG = {
+    apiKey: "AIzaSyDuumSoM9tuDTrw6TWLqhGKdT94hX_cIbA",
+    authDomain: "cijarabe2.firebaseapp.com",
+    databaseURL: "https://cijarabe2-default-rtdb.firebaseio.com/",
+    projectId: "cijarabe2",
+    storageBucket: "cijarabe2.firebasestorage.app",
+    messagingSenderId: "502025011637",
+    appId: "1:502025011637:web:9e38b7eb79686226a7d9fc"
+};
+
 const userStates = new Map();
 const scheduledMessages = [];
 let availableGroups = [];
+
+const TANQUES_LIST = [
+    'TQ 1', 'TQ 2', 'TQ 3', 'TQ 4', 'TQ 5', 'TQ 6', 'TQ 7', 'TQ 8', 'TQ 9', 'TQ 10',
+    'TQ 11', 'TQ 12', 'TQ 13', 'TQ 14', 'TQ 15', 'TQ 16', 'TQ 400'
+];
+
+const MESES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+];
 
 const client = new Client({
     authStrategy: new LocalAuth({
@@ -70,7 +89,8 @@ function crearCarpetas() {
         path.join(__dirname, 'media'),
         path.join(__dirname, 'imagenes-programadas'),
         path.join(__dirname, 'videos-programados'),
-        path.join(__dirname, 'pdf-programados')
+        path.join(__dirname, 'pdf-programados'),
+        path.join(__dirname, 'reportes-cip')
     ];
     
     carpetas.forEach(carpeta => {
@@ -216,12 +236,544 @@ const GRUPOS_DISPONIBLES = [
     "Linea 6"
 ];
 
-const MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-];
+function formatearFecha(fechaStr) {
+    if (!fechaStr) return 'N/A';
+    const [year, month, day] = fechaStr.split('-');
+    return `${day}/${month}/${year}`;
+}
 
-// Función para decodificar base64 a array de bytes
+function numeroConEmoji(num) {
+    const emojis = ['0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣'];
+    const numStr = num.toString();
+    let resultado = '';
+    for (let i = 0; i < numStr.length; i++) {
+        const digito = parseInt(numStr[i]);
+        resultado += emojis[digito];
+    }
+    return resultado;
+}
+
+async function consultarRegistrosCIP(tanque, tipoBusqueda, fechaInicio, fechaFin, mes, año) {
+    try {
+        console.log(`🔍 Consultando registros CIP - Tanque: ${tanque}, Tipo: ${tipoBusqueda}`);
+        
+        let url = `${FIREBASE_CIP_CONFIG.databaseURL}/registrosCIP.json`;
+        const response = await axios.get(url, { timeout: 30000 });
+        const registros = response.data || {};
+        
+        let registrosArray = [];
+        for (const key in registros) {
+            if (registros.hasOwnProperty(key)) {
+                registrosArray.push({
+                    id: key,
+                    ...registros[key]
+                });
+            }
+        }
+        
+        let registrosFiltrados = registrosArray;
+        if (tanque !== 'todos') {
+            registrosFiltrados = registrosArray.filter(r => 
+                r.tanqueLinea && r.tanqueLinea.toLowerCase() === tanque.toLowerCase()
+            );
+        }
+        
+        if (tipoBusqueda === 'rango_fechas' && fechaInicio && fechaFin) {
+            registrosFiltrados = registrosFiltrados.filter(r => 
+                r.fecha && r.fecha >= fechaInicio && r.fecha <= fechaFin
+            );
+        } else if (tipoBusqueda === 'mes' && mes && año) {
+            const mesNum = (MESES.indexOf(mes) + 1).toString().padStart(2, '0');
+            registrosFiltrados = registrosFiltrados.filter(r => {
+                if (!r.fecha) return false;
+                const [rAño, rMes] = r.fecha.split('-');
+                return rAño === año.toString() && rMes === mesNum;
+            });
+        }
+        
+        registrosFiltrados.sort((a, b) => {
+            if (!a.fecha) return 1;
+            if (!b.fecha) return -1;
+            return b.fecha.localeCompare(a.fecha);
+        });
+        
+        console.log(`✅ Encontrados ${registrosFiltrados.length} registros`);
+        return registrosFiltrados;
+        
+    } catch (error) {
+        console.error("Error al consultar registros CIP:", error.message);
+        return [];
+    }
+}
+
+function generarResumenRegistros(registros) {
+    if (registros.length === 0) {
+        return "No se encontraron registros para los criterios seleccionados.";
+    }
+    
+    const tanquesUnicos = new Set();
+    const operadoresUnicos = new Set();
+    const pasosCount = {};
+    
+    registros.forEach(r => {
+        if (r.tanqueLinea) tanquesUnicos.add(r.tanqueLinea);
+        if (r.operador) operadoresUnicos.add(r.operador);
+        if (r.pasos) {
+            pasosCount[r.pasos] = (pasosCount[r.pasos] || 0) + 1;
+        }
+    });
+    
+    let resumen = `📊 *RESUMEN DE REGISTROS*\n\n`;
+    resumen += `• Total registros: ${registros.length}\n`;
+    resumen += `• Tanques involucrados: ${tanquesUnicos.size}\n`;
+    resumen += `• Operadores: ${operadoresUnicos.size}\n\n`;
+    
+    resumen += `📋 *TIPOS DE CIP REALIZADOS:*\n`;
+    Object.entries(pasosCount)
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([paso, count]) => {
+            resumen += `• ${paso}: ${count}\n`;
+        });
+    
+    return resumen;
+}
+
+async function generarExcel(registros, tanque, tipoBusqueda, filtros) {
+    try {
+        const wb = XLSX.utils.book_new();
+        
+        const datos = registros.map(registro => {
+            const datosCompletos = {
+                'Fecha': formatearFecha(registro.fecha),
+                'Hora': registro.hora || 'N/A',
+                'Turno': registro.turno || 'N/A',
+                'Operador': registro.operador || 'N/A',
+                'Catador': registro.catador || 'N/A',
+                'Segundo Catador': registro.catador2 || 'N/A',
+                'Tanque/Línea': registro.tanqueLinea || 'N/A',
+                'CIP': registro.cip || 'N/A',
+                'Pasos': registro.pasos || 'N/A',
+                'Concentración Cloro Enjuague': registro.concentracionCloro || 'N/A',
+                'Sabor del Tanque': registro.saborTanque || 'N/A',
+                'Comentarios': registro.comentarios || 'N/A',
+                'Inspección Visual': registro.inspeccionVisual || 'N/A',
+                'Temperatura Soda (°C)': registro.tempSoda || 'N/A',
+                'Concentración Soda': registro.concentracionSoda || 'N/A',
+                'Temperatura Agua (°C)': registro.tempAgua || 'N/A',
+                'Temperatura AC55 (°C)': registro.tempAC55 || 'N/A',
+                'Concentración AC55': registro.concentracionAC55 || 'N/A',
+                'Temperatura Dióxido Cloro (°C)': registro.tempDioxidoCloro || 'N/A',
+                'Concentración Dióxido Cloro': registro.concentracionDioxidoCloro || 'N/A',
+                'Temperatura Acelerate (°C)': registro.tempAccelerate || 'N/A',
+                'Concentración Acelerate': registro.concentracionAccelerate || 'N/A',
+                'Temperatura Oxonia (°C)': registro.tempOxonia || 'N/A',
+                'Concentración Oxonia': registro.concentracionOxonia || 'N/A',
+                'Temperatura Vortex (°C)': registro.tempVortex || 'N/A',
+                'Concentración Vortex': registro.concentracionVortex || 'N/A',
+                'PH Final': registro.phFinal || 'N/A',
+                'Arrastre Soda': registro.arrastreSoda || 'N/A',
+                'Olor': registro.olor || 'N/A',
+                'Sabor': registro.sabor || 'N/A',
+                'Prueba Cafeína': registro.pruebaCafeina || 'N/A',
+                'Prueba Azúcar': registro.pruebaAzucar || 'N/A'
+            };
+
+            if (registro.flujos) {
+                for (const [key, value] of Object.entries(registro.flujos)) {
+                    datosCompletos[`${key} Inicio`] = value.inicio || 'N/A';
+                    datosCompletos[`${key} Fin`] = value.fin || 'N/A';
+                    datosCompletos[`${key} Valor`] = value.valor || 'N/A';
+                }
+            }
+
+            return datosCompletos;
+        });
+
+        const ws = XLSX.utils.json_to_sheet(datos);
+        
+        const columnas = [
+            { wch: 10 }, { wch: 8 }, { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 15 },
+            { wch: 12 }, { wch: 8 }, { wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 30 },
+            { wch: 30 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
+            { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
+            { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 8 },
+            { wch: 15 }, { wch: 15 }
+        ];
+        
+        ws['!cols'] = columnas;
+
+        XLSX.utils.book_append_sheet(wb, ws, 'Registros CIP');
+
+        const fechaActual = moment().tz(TIMEZONE).format('YYYYMMDD_HHmmss');
+        const tanqueNombre = tanque === 'todos' ? 'TODOS' : tanque.replace(/\s+/g, '_');
+        const nombreArchivo = `CIP_${tanqueNombre}_${fechaActual}.xlsx`;
+        const rutaArchivo = path.join(__dirname, 'reportes-cip', nombreArchivo);
+
+        XLSX.writeFile(wb, rutaArchivo);
+        
+        return {
+            success: true,
+            ruta: rutaArchivo,
+            nombre: nombreArchivo
+        };
+        
+    } catch (error) {
+        console.error("Error al generar Excel:", error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+async function generarPDF(registros, tanque, tipoBusqueda, filtros) {
+    return new Promise((resolve, reject) => {
+        try {
+            const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+            
+            const fechaActual = moment().tz(TIMEZONE).format('YYYYMMDD_HHmmss');
+            const tanqueNombre = tanque === 'todos' ? 'TODOS' : tanque.replace(/\s+/g, '_');
+            const nombreArchivo = `CIP_${tanqueNombre}_${fechaActual}.pdf`;
+            const rutaArchivo = path.join(__dirname, 'reportes-cip', nombreArchivo);
+            
+            const stream = fs.createWriteStream(rutaArchivo);
+            doc.pipe(stream);
+            
+            doc.fontSize(16).font('Helvetica-Bold').text('REPORTE CIP JARABE TERMINADO', { align: 'center' });
+            doc.moveDown();
+            
+            doc.fontSize(10).font('Helvetica');
+            doc.text(`Tanque: ${tanque === 'todos' ? 'TODOS' : tanque}`);
+            
+            if (tipoBusqueda === 'rango_fechas') {
+                doc.text(`Período: ${formatearFecha(filtros.fechaInicio)} - ${formatearFecha(filtros.fechaFin)}`);
+            } else if (tipoBusqueda === 'mes') {
+                doc.text(`Mes: ${filtros.mes} ${filtros.año}`);
+            }
+            
+            doc.text(`Total registros: ${registros.length}`);
+            doc.text(`Fecha generación: ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm:ss')}`);
+            doc.moveDown();
+            
+            const tableTop = 150;
+            const rowHeight = 20;
+            const colWidths = [70, 50, 50, 80, 80, 70, 60, 100];
+            
+            doc.font('Helvetica-Bold').fontSize(8);
+            const headers = ['Fecha', 'Hora', 'Turno', 'Operador', 'Catador', 'Tanque', 'CIP', 'Pasos'];
+            let x = 30;
+            headers.forEach((header, i) => {
+                doc.text(header, x, tableTop, { width: colWidths[i], align: 'left' });
+                x += colWidths[i];
+            });
+            
+            doc.moveTo(30, tableTop + 15).lineTo(30 + colWidths.reduce((a, b) => a + b, 0), tableTop + 15).stroke();
+            
+            doc.font('Helvetica').fontSize(7);
+            let y = tableTop + 20;
+            
+            registros.slice(0, 50).forEach((registro, index) => {
+                if (y > 500) {
+                    doc.addPage();
+                    y = 50;
+                    
+                    doc.font('Helvetica-Bold').fontSize(8);
+                    x = 30;
+                    headers.forEach((header, i) => {
+                        doc.text(header, x, y, { width: colWidths[i], align: 'left' });
+                        x += colWidths[i];
+                    });
+                    doc.moveTo(30, y + 15).lineTo(30 + colWidths.reduce((a, b) => a + b, 0), y + 15).stroke();
+                    y += 20;
+                    doc.font('Helvetica').fontSize(7);
+                }
+                
+                x = 30;
+                doc.text(formatearFecha(registro.fecha), x, y, { width: colWidths[0], align: 'left' });
+                x += colWidths[0];
+                doc.text(registro.hora || 'N/A', x, y, { width: colWidths[1], align: 'left' });
+                x += colWidths[1];
+                doc.text(registro.turno || 'N/A', x, y, { width: colWidths[2], align: 'left' });
+                x += colWidths[2];
+                doc.text(registro.operador || 'N/A', x, y, { width: colWidths[3], align: 'left' });
+                x += colWidths[3];
+                doc.text(registro.catador || 'N/A', x, y, { width: colWidths[4], align: 'left' });
+                x += colWidths[4];
+                doc.text(registro.tanqueLinea || 'N/A', x, y, { width: colWidths[5], align: 'left' });
+                x += colWidths[5];
+                doc.text(registro.cip || 'N/A', x, y, { width: colWidths[6], align: 'left' });
+                x += colWidths[6];
+                doc.text(registro.pasos || 'N/A', x, y, { width: colWidths[7], align: 'left' });
+                
+                y += rowHeight;
+            });
+            
+            doc.end();
+            
+            stream.on('finish', () => {
+                resolve({
+                    success: true,
+                    ruta: rutaArchivo,
+                    nombre: nombreArchivo
+                });
+            });
+            
+            stream.on('error', (error) => {
+                reject(error);
+            });
+            
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+async function manejarCIPJarabeTerminado(message, userId) {
+    userStates.set(userId, { 
+        estado: 'cip_esperando_tanque',
+        datos: {}
+    });
+    
+    let menuTanques = `🧪 *CIP JARABE TERMINADO*\n\n`;
+    menuTanques += `Selecciona el tanque que deseas consultar:\n\n`;
+    
+    TANQUES_LIST.forEach((tanque, index) => {
+        menuTanques += `${numeroConEmoji(index + 1)} - ${tanque}\n`;
+    });
+    
+    menuTanques += `\n${numeroConEmoji(TANQUES_LIST.length + 1)} - *TODOS LOS TANQUES*\n\n`;
+    menuTanques += `Envía el número de la opción (1-${TANQUES_LIST.length + 1})\n`;
+    menuTanques += `O envía *cancelar* para regresar al menú principal.`;
+    
+    await message.reply(menuTanques);
+}
+
+async function manejarSeleccionTanque(message, userId, estadoUsuario) {
+    const opcion = parseInt(message.body.trim());
+    
+    if (isNaN(opcion) || opcion < 1 || opcion > TANQUES_LIST.length + 1) {
+        await message.reply(`❌ Opción inválida. Por favor envía un número del 1 al ${TANQUES_LIST.length + 1}.`);
+        return;
+    }
+    
+    let tanqueSeleccionado;
+    if (opcion === TANQUES_LIST.length + 1) {
+        tanqueSeleccionado = 'todos';
+    } else {
+        tanqueSeleccionado = TANQUES_LIST[opcion - 1];
+    }
+    
+    estadoUsuario.datos.tanque = tanqueSeleccionado;
+    estadoUsuario.estado = 'cip_esperando_tipo_busqueda';
+    userStates.set(userId, estadoUsuario);
+    
+    await message.reply(
+        `✅ Tanque seleccionado: *${tanqueSeleccionado === 'todos' ? 'TODOS LOS TANQUES' : tanqueSeleccionado}*\n\n` +
+        `¿Cómo quieres buscar la información?\n\n` +
+        `1️⃣ - *Por rango de fechas* (ej: del 1 al 20)\n` +
+        `2️⃣ - *Por mes completo*\n\n` +
+        `Envía el número de la opción (1-2)`
+    );
+}
+
+async function manejarTipoBusqueda(message, userId, estadoUsuario) {
+    const opcion = message.body.trim();
+    
+    if (opcion === '1') {
+        estadoUsuario.estado = 'cip_esperando_rango_fechas';
+        userStates.set(userId, estadoUsuario);
+        
+        await message.reply(
+            "📅 *RANGO DE FECHAS*\n\n" +
+            "Envía el rango de fechas en formato:\n" +
+            "`DD-MM-YYYY hasta DD-MM-YYYY`\n\n" +
+            "*Ejemplos:*\n" +
+            "• `01-03-2025 hasta 20-03-2025`\n" +
+            "• `1-3-2025 hasta 20-3-2025`\n\n" +
+            "O envía *cancelar* para regresar."
+        );
+        
+    } else if (opcion === '2') {
+        estadoUsuario.estado = 'cip_esperando_mes';
+        userStates.set(userId, estadoUsuario);
+        
+        let menuMeses = "📅 *SELECCIONA EL MES*\n\n";
+        MESES.forEach((mes, index) => {
+            menuMeses += `${numeroConEmoji(index + 1)} - ${mes}\n`;
+        });
+        
+        menuMeses += `\nEnvía el número del mes (1-12)`;
+        
+        await message.reply(menuMeses);
+        
+    } else {
+        await message.reply("❌ Opción inválida. Por favor envía 1 o 2.");
+    }
+}
+
+async function manejarRangoFechas(message, userId, estadoUsuario) {
+    const texto = message.body.trim().toLowerCase();
+    
+    const patron = /(\d{1,2})-(\d{1,2})-(\d{4})\s+(?:hasta|a)\s+(\d{1,2})-(\d{1,2})-(\d{4})/i;
+    const match = texto.match(patron);
+    
+    if (!match) {
+        await message.reply(
+            "❌ Formato incorrecto.\n\n" +
+            "Usa el formato: `DD-MM-YYYY hasta DD-MM-YYYY`\n" +
+            "Ejemplo: `01-03-2025 hasta 20-03-2025`"
+        );
+        return;
+    }
+    
+    const diaInicio = match[1].padStart(2, '0');
+    const mesInicio = match[2].padStart(2, '0');
+    const añoInicio = match[3];
+    const fechaInicio = `${añoInicio}-${mesInicio}-${diaInicio}`;
+    
+    const diaFin = match[4].padStart(2, '0');
+    const mesFin = match[5].padStart(2, '0');
+    const añoFin = match[6];
+    const fechaFin = `${añoFin}-${mesFin}-${diaFin}`;
+    
+    if (fechaInicio > fechaFin) {
+        await message.reply("❌ La fecha de inicio debe ser menor o igual a la fecha de fin.");
+        return;
+    }
+    
+    estadoUsuario.datos.tipoBusqueda = 'rango_fechas';
+    estadoUsuario.datos.fechaInicio = fechaInicio;
+    estadoUsuario.datos.fechaFin = fechaFin;
+    estadoUsuario.estado = 'cip_esperando_formato_descarga';
+    userStates.set(userId, estadoUsuario);
+    
+    await message.reply(
+        "✅ Rango de fechas configurado correctamente.\n\n" +
+        "¿En qué formato deseas descargar la información?\n\n" +
+        "1️⃣ - *Excel* (XLSX)\n" +
+        "2️⃣ - *PDF*\n\n" +
+        "Envía el número de la opción (1-2)"
+    );
+}
+
+async function manejarSeleccionMes(message, userId, estadoUsuario) {
+    const mes = parseInt(message.body.trim());
+    
+    if (isNaN(mes) || mes < 1 || mes > 12) {
+        await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 12.");
+        return;
+    }
+    
+    estadoUsuario.datos.mesSeleccionado = MESES[mes - 1];
+    estadoUsuario.estado = 'cip_esperando_anio';
+    userStates.set(userId, estadoUsuario);
+    
+    const años = [2025, 2026, 2027];
+    
+    let menuAños = `📅 *SELECCIONA EL AÑO*\n\n`;
+    años.forEach((año, index) => {
+        menuAños += `${numeroConEmoji(index + 1)} - ${año}\n`;
+    });
+    
+    menuAños += `\nEnvía el número del año (1-3)`;
+    
+    await message.reply(menuAños);
+}
+
+async function manejarSeleccionAnio(message, userId, estadoUsuario) {
+    const opcion = parseInt(message.body.trim());
+    
+    if (isNaN(opcion) || opcion < 1 || opcion > 3) {
+        await message.reply("❌ Opción inválida. Por favor envía un número del 1 al 3.");
+        return;
+    }
+    
+    const años = [2025, 2026, 2027];
+    const añoSeleccionado = años[opcion - 1];
+    
+    estadoUsuario.datos.tipoBusqueda = 'mes';
+    estadoUsuario.datos.año = añoSeleccionado;
+    estadoUsuario.estado = 'cip_esperando_formato_descarga';
+    userStates.set(userId, estadoUsuario);
+    
+    await message.reply(
+        "✅ Mes y año configurados correctamente.\n\n" +
+        "¿En qué formato deseas descargar la información?\n\n" +
+        "1️⃣ - *Excel* (XLSX)\n" +
+        "2️⃣ - *PDF*\n\n" +
+        "Envía el número de la opción (1-2)"
+    );
+}
+
+async function manejarFormatoDescarga(message, userId, estadoUsuario) {
+    const opcion = message.body.trim();
+    
+    if (opcion !== '1' && opcion !== '2') {
+        await message.reply("❌ Opción inválida. Por favor envía 1 para Excel o 2 para PDF.");
+        return;
+    }
+    
+    await message.reply("🔍 Consultando registros CIP... Esto puede tomar unos segundos.");
+    
+    const registros = await consultarRegistrosCIP(
+        estadoUsuario.datos.tanque,
+        estadoUsuario.datos.tipoBusqueda,
+        estadoUsuario.datos.fechaInicio,
+        estadoUsuario.datos.fechaFin,
+        estadoUsuario.datos.mesSeleccionado,
+        estadoUsuario.datos.año
+    );
+    
+    if (registros.length === 0) {
+        await message.reply(
+            "❌ *No se encontraron registros*\n\n" +
+            "No hay información disponible para los criterios seleccionados.\n\n" +
+            "Verifica:\n" +
+            "• El tanque seleccionado\n" +
+            "• El rango de fechas\n" +
+            "• El mes y año"
+        );
+        userStates.delete(userId);
+        await enviarMenu(message);
+        return;
+    }
+    
+    const resumen = generarResumenRegistros(registros);
+    await message.reply(resumen);
+    
+    let resultado;
+    if (opcion === '1') {
+        resultado = await generarExcel(registros, estadoUsuario.datos.tanque, estadoUsuario.datos.tipoBusqueda, estadoUsuario.datos);
+    } else {
+        resultado = await generarPDF(registros, estadoUsuario.datos.tanque, estadoUsuario.datos.tipoBusqueda, estadoUsuario.datos);
+    }
+    
+    if (resultado.success) {
+        const media = MessageMedia.fromFilePath(resultado.ruta);
+        await message.reply(
+            media,
+            undefined,
+            { caption: `✅ *ARCHIVO GENERADO*\n\n📁 ${resultado.nombre}\n📊 Total registros: ${registros.length}` }
+        );
+        
+        setTimeout(() => {
+            try {
+                if (fs.existsSync(resultado.ruta)) {
+                    fs.unlinkSync(resultado.ruta);
+                }
+            } catch (error) {
+                console.error("Error al eliminar archivo temporal:", error);
+            }
+        }, 5000);
+        
+    } else {
+        await message.reply("❌ Error al generar el archivo. Intenta nuevamente.");
+    }
+    
+    userStates.delete(userId);
+    await enviarMenu(message);
+}
+
 function base64ToArrayBuffer(base64) {
     const binaryString = Buffer.from(base64, 'base64').toString('binary');
     const bytes = new Uint8Array(binaryString.length);
@@ -231,7 +783,6 @@ function base64ToArrayBuffer(base64) {
     return bytes;
 }
 
-// Función para procesar Excel desde base64
 async function procesarExcelDesdeBase64(base64) {
     try {
         const buffer = Buffer.from(base64, 'base64');
@@ -245,7 +796,6 @@ async function procesarExcelDesdeBase64(base64) {
     }
 }
 
-// Función para consultar datos de Guardian
 async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSeleccionado) {
     try {
         console.log(`🔍 Consultando Guardian para código: ${codigoEmpleado}, mes: ${mesSeleccionado}, año: ${anioSeleccionado}`);
@@ -253,7 +803,6 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         const mes = mesSeleccionado.toString().padStart(2, '0');
         const anio = anioSeleccionado.toString();
         
-        // Obtener todos los reportes
         const snapshot = await axios.get(`${FIREBASE_GUARDIAN_CONFIG.databaseURL}/reportes.json`, {
             timeout: 15000
         });
@@ -261,9 +810,7 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         const reportes = snapshot.data || {};
         let todosLosRegistros = [];
         
-        // Procesar cada reporte
         for (const [reporteId, reporte] of Object.entries(reportes)) {
-            // Filtrar por mes y año
             if (reporte.mes === mes && reporte.anio === anio && reporte.archivo) {
                 try {
                     const registros = await procesarExcelDesdeBase64(reporte.archivo);
@@ -284,36 +831,43 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
             };
         }
         
-        // Columnas específicas del Excel
-        const COLUMNA_NOMBRE = 'Observado por';
-        const COLUMNA_ID = 'ID del observador';
-        const COLUMNA_TIPO_USUARIO = 'Tipo de usuario del observador';
+        const COLUMNA_ID_IMPLICADO = 'ID del implicado';
+        const COLUMNA_DESCRIPCION = 'Descripción';
+        const COLUMNA_AREA = 'Área de ocurrencia';
+        const COLUMNA_SUBAREA = 'Subárea de ocurrencia';
+        const COLUMNA_OBSERVADO_POR = 'Observado por';
+        const COLUMNA_PILAR_MEDIO_AMBIENTE = 'Pilar del medio ambiente'; // Columna para identificar reportes ambientales
         
-        // Filtrar registros del técnico por código
-        const registrosTecnico = todosLosRegistros.filter(reg => {
-            const idRegistro = reg[COLUMNA_ID] ? reg[COLUMNA_ID].toString().trim() : '';
-            return idRegistro.includes(codigoEmpleado) || codigoEmpleado.includes(idRegistro);
+        const accionesInsegurasComoImplicado = todosLosRegistros.filter(reg => {
+            const esAccionInsegura = reg.tipoReporte === 'accion_insegura';
+            const idImplicado = reg[COLUMNA_ID_IMPLICADO] ? reg[COLUMNA_ID_IMPLICADO].toString().trim() : '';
+            const coincideId = idImplicado.includes(codigoEmpleado) || codigoEmpleado.includes(idImplicado);
+            return esAccionInsegura && coincideId;
         });
         
-        if (registrosTecnico.length === 0) {
+        const registrosComoObservador = todosLosRegistros.filter(reg => {
+            const idObservador = reg['ID del observador'] ? reg['ID del observador'].toString().trim() : '';
+            return idObservador.includes(codigoEmpleado) || codigoEmpleado.includes(idObservador);
+        });
+        
+        if (registrosComoObservador.length === 0 && accionesInsegurasComoImplicado.length === 0) {
             return {
                 success: false,
                 mensaje: `❌ *No se encontraron registros* para el código *${codigoEmpleado}* en ${mes}/${anio}`
             };
         }
         
-        // Obtener información del usuario del primer registro
-        const primerRegistro = registrosTecnico[0];
-        const nombreTecnico = primerRegistro[COLUMNA_NOMBRE] || 'Desconocido';
-        const tipoUsuario = primerRegistro[COLUMNA_TIPO_USUARIO] || 'No especificado';
+        const primerRegistroObservador = registrosComoObservador.length > 0 ? registrosComoObservador[0] : null;
+        const nombreTecnico = primerRegistroObservador ? (primerRegistroObservador[COLUMNA_OBSERVADO_POR] || 'Desconocido') : 'Desconocido';
+        const tipoUsuario = primerRegistroObservador ? (primerRegistroObservador['Tipo de usuario del observador'] || 'No especificado') : 'No especificado';
         
-        // Contar por tipo de reporte
         let condicionesInseguras = 0;
         let reconocimientos = 0;
         let accionesInseguras = 0;
         let incidentesMenores = 0;
+        let reportesAmbientales = 0;
         
-        registrosTecnico.forEach(reg => {
+        registrosComoObservador.forEach(reg => {
             const tipo = reg.tipoReporte || '';
             
             if (tipo === 'condicion_insegura') {
@@ -325,18 +879,28 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
             } else if (tipo === 'incidentes_menores') {
                 incidentesMenores++;
             }
+            
+            // Verificar si es un reporte ambiental (basado en la columna Pilar del medio ambiente)
+            const pilarMedioAmbiente = reg[COLUMNA_PILAR_MEDIO_AMBIENTE] || 
+                                      reg['Pilar de medio ambiente'] || 
+                                      reg['Pilar medio ambiente'];
+            
+            if (pilarMedioAmbiente) {
+                const valorPilar = pilarMedioAmbiente.toString().toUpperCase().trim();
+                if (valorPilar === 'SI' || valorPilar === 'SÍ') {
+                    reportesAmbientales++;
+                }
+            }
         });
         
-        // Preparar resultado
         let resultado = `📊 *INFORME GUARDIAN - JARABE*\n\n`;
         resultado += `👤 *Técnico:* ${nombreTecnico}\n`;
         resultado += `🔢 *Código:* ${codigoEmpleado}\n`;
         resultado += `📌 *Tipo de usuario:* ${tipoUsuario}\n`;
         resultado += `📅 *Período:* ${mes}/${anio}\n\n`;
         
-        resultado += `📋 *REGISTROS DEL MES:*\n\n`;
+        resultado += `📋 *REGISTROS DEL MES (Como observador):*\n\n`;
         
-        // Condiciones Inseguras
         resultado += `🚨 *Condiciones Inseguras:* ${condicionesInseguras}\n`;
         resultado += `   `;
         for (let i = 0; i < 20; i++) {
@@ -345,7 +909,6 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         }
         resultado += `\n\n`;
         
-        // Reconocimientos
         resultado += `✅ *Reconocimientos:* ${reconocimientos}\n`;
         resultado += `   `;
         for (let i = 0; i < 20; i++) {
@@ -354,7 +917,6 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         }
         resultado += `\n\n`;
         
-        // Acciones Inseguras
         resultado += `⚠️ *Acciones Inseguras:* ${accionesInseguras}\n`;
         resultado += `   `;
         for (let i = 0; i < 20; i++) {
@@ -363,7 +925,6 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         }
         resultado += `\n\n`;
         
-        // Incidentes Menores
         resultado += `📋 *Incidentes Menores:* ${incidentesMenores}\n`;
         resultado += `   `;
         for (let i = 0; i < 20; i++) {
@@ -372,13 +933,43 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
         }
         resultado += `\n\n`;
         
-        // Resumen
-        resultado += `📊 *RESUMEN TOTAL:*\n`;
+        resultado += `🌱 *Reportes Ambientales:* ${reportesAmbientales}\n`;
+        resultado += `   `;
+        for (let i = 0; i < 20; i++) {
+            if (i < reportesAmbientales) resultado += `█`;
+            else resultado += `░`;
+        }
+        resultado += `\n\n`;
+        
+        resultado += `📊 *RESUMEN TOTAL (Como observador):*\n`;
         resultado += `• Condiciones Inseguras: ${condicionesInseguras}\n`;
         resultado += `• Reconocimientos: ${reconocimientos}\n`;
         resultado += `• Acciones Inseguras: ${accionesInseguras}\n`;
         resultado += `• Incidentes Menores: ${incidentesMenores}\n`;
-        resultado += `• Total registros: ${registrosTecnico.length}\n\n`;
+        resultado += `• Reportes Ambientales: ${reportesAmbientales}\n`;
+        resultado += `• Total registros: ${registrosComoObservador.length}\n\n`;
+        
+        if (accionesInsegurasComoImplicado.length > 0) {
+            resultado += `⚠️ *ACCIONES INSEGURAS DONDE HAS SIDO REPORTADO COMO IMPLICADO:*\n\n`;
+            
+            accionesInsegurasComoImplicado.forEach((reg, index) => {
+                const descripcion = reg[COLUMNA_DESCRIPCION] || 'Sin descripción';
+                const area = reg[COLUMNA_AREA] || 'No especificada';
+                const subarea = reg[COLUMNA_SUBAREA] || 'No especificada';
+                const observadoPor = reg[COLUMNA_OBSERVADO_POR] || 'Desconocido';
+                
+                resultado += `⚠️ *ACCIÓN INSEGURA #${index + 1}*\n`;
+                resultado += `📝 *Te han reportado por:* ${descripcion}\n`;
+                resultado += `📍 *Área de ocurrencia:* ${area}\n`;
+                resultado += `📍 *Subárea de ocurrencia:* ${subarea}\n`;
+                resultado += `👤 *Reportado por:* ${observadoPor}\n`;
+                resultado += `─────────────────────\n\n`;
+            });
+            
+            resultado += `📊 *TOTAL DE ACCIONES INSEGURAS COMO IMPLICADO:* ${accionesInsegurasComoImplicado.length}\n\n`;
+        } else {
+            resultado += `✅ *¡FELICIDADES!* No tienes acciones inseguras reportadas como implicado en este período.\n\n`;
+        }
         
         resultado += `⏰ *Consulta:* ${moment().tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
         resultado += `🔗 *Fuente:* Guardian Jarabe`;
@@ -393,7 +984,9 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
                 reconocimientos,
                 accionesInseguras,
                 incidentesMenores,
-                total: registrosTecnico.length
+                reportesAmbientales,
+                totalObservador: registrosComoObservador.length,
+                totalAccionesImplicado: accionesInsegurasComoImplicado.length
             }
         };
         
@@ -422,7 +1015,6 @@ async function consultarGuardian(codigoEmpleado, mesSeleccionado, anioSelecciona
     }
 }
 
-// Función para manejar la consulta de Guardian
 async function manejarGuardian(message, userId) {
     userStates.set(userId, { 
         estado: 'guardian_esperando_codigo',
@@ -437,12 +1029,12 @@ async function manejarGuardian(message, userId) {
         `• 1111\n` +
         `• 76009949\n\n` +
         `*📝 IMPORTANTE:*\n` +
-        `Puedes buscar con el código completo o cualquier parte que coincida.\n\n` +
+        `Puedes buscar con el código completo o cualquier parte que coincida.\n` +
+        `El sistema buscará tanto reportes que hayas hecho como acciones inseguras donde apareces como implicado.\n\n` +
         `Envía tu código ahora o escribe *cancelar* para regresar al menú.`
     );
 }
 
-// Función para consultar reclamos de calidad desde Firestore
 async function consultarReclamosCalidad() {
     try {
         console.log('🔍 Consultando reclamos de calidad desde Firestore...');
@@ -466,7 +1058,6 @@ async function consultarReclamosCalidad() {
             };
         }
 
-        // Procesar los reclamos
         const reclamos = [];
         let fechaMasReciente = null;
         let reclamoMasReciente = null;
@@ -474,10 +1065,9 @@ async function consultarReclamosCalidad() {
         for (const doc of documents) {
             const fields = doc.fields || {};
             
-            // Obtener la fecha del reclamo del campo 'date' (formato YYYY-MM-DD)
             let fechaReclamo = null;
             if (fields.date && fields.date.stringValue) {
-                fechaReclamo = fields.date.stringValue; // Viene como "2024-12-19"
+                fechaReclamo = fields.date.stringValue;
             }
 
             const reclamo = {
@@ -491,14 +1081,12 @@ async function consultarReclamosCalidad() {
             };
             reclamos.push(reclamo);
 
-            // Actualizar fecha más reciente usando el campo 'date'
             if (fechaReclamo && (!fechaMasReciente || fechaReclamo > fechaMasReciente)) {
                 fechaMasReciente = fechaReclamo;
                 reclamoMasReciente = reclamo;
             }
         }
 
-        // Calcular días sin reclamos desde el último reclamo hasta hoy
         let diasSinReclamos = 0;
         const hoy = moment().tz(TIMEZONE).format('YYYY-MM-DD');
         
@@ -508,14 +1096,12 @@ async function consultarReclamosCalidad() {
             diasSinReclamos = fechaHoy.diff(fechaUltimo, 'days');
         }
 
-        // Ordenar reclamos por fecha (más recientes primero)
         const reclamosOrdenados = reclamos.sort((a, b) => {
             if (a.fecha < b.fecha) return 1;
             if (a.fecha > b.fecha) return -1;
             return 0;
         });
 
-        // Preparar mensaje
         let resultado = "📋 *SISTEMA DE RECLAMOS DE CALIDAD*\n\n";
         
         if (diasSinReclamos > 0) {
@@ -606,7 +1192,7 @@ async function obtenerGruposDisponibles(message, userId) {
         
         let menuGrupos = `👥 *GRUPOS DISPONIBLES*\n\n`;
         grupos.forEach((grupo, index) => {
-            menuGrupos += `${index + 1}️⃣ - ${grupo}\n`;
+            menuGrupos += `${numeroConEmoji(index + 1)} - ${grupo}\n`;
         });
         
         menuGrupos += `\n*Selecciona el número del grupo que deseas consultar*\nO envía *cancelar* para regresar.`;
@@ -623,7 +1209,7 @@ async function obtenerGruposDisponibles(message, userId) {
         
         let menuGrupos = `👥 *GRUPOS DISPONIBLES*\n\n`;
         GRUPOS_DISPONIBLES.forEach((grupo, index) => {
-            menuGrupos += `${index + 1}️⃣ - ${grupo}\n`;
+            menuGrupos += `${numeroConEmoji(index + 1)} - ${grupo}\n`;
         });
         
         menuGrupos += `\n*Selecciona el número del grupo que deseas consultar*\nO envía *cancelar* para regresar.`;
@@ -669,7 +1255,7 @@ async function obtenerAnosDisponibles(message, userId, tipo, identificador) {
         }
         
         anos.forEach((ano, index) => {
-            menuAnos += `${index + 1}️⃣ - ${ano}\n`;
+            menuAnos += `${numeroConEmoji(index + 1)} - ${ano}\n`;
         });
         
         menuAnos += `\n*Envía el número del año*\nO envía *cancelar* para regresar.`;
@@ -701,7 +1287,7 @@ async function obtenerMesesGrupo(message, userId, grupoSeleccionado, añoSelecci
     let menuMeses = `📅 *SELECCIONA EL MES*\n\nGrupo: *${grupoSeleccionado}*\nAño: *${añoSeleccionado}*\n\n`;
     
     for (let i = 0; i < MESES.length; i++) {
-        menuMeses += `${i + 1}️⃣ - ${MESES[i]}\n`;
+        menuMeses += `${numeroConEmoji(i + 1)} - ${MESES[i]}\n`;
     }
     
     menuMeses += `\n*Envía el número del mes (1-12)*\nO envía *cancelar* para regresar.`;
@@ -890,7 +1476,7 @@ async function obtenerMesesTecnico(message, userId, codigoTecnico, añoSeleccion
         let menuMeses = `📅 *SELECCIONA EL MES*\n\nTécnico: *${nombreTecnico || 'Desconocido'}* (${codigoTecnico})\nAño: *${añoSeleccionado}*\n\n`;
         
         for (let i = 0; i < MESES.length; i++) {
-            menuMeses += `${i + 1}️⃣ - ${MESES[i]}\n`;
+            menuMeses += `${numeroConEmoji(i + 1)} - ${MESES[i]}\n`;
         }
         
         menuMeses += `\n*Envía el número del mes (1-12)*\nO envía *cancelar* para regresar.`;
@@ -2432,7 +3018,7 @@ async function manejarConfirmacionGrupos(message, userId, estadoUsuario) {
         
         let listaGrupos = "📋 *GRUPOS DISPONIBLES*\n\n";
         grupos.forEach((grupo, index) => {
-            listaGrupos += `${index + 1} - ${grupo.name}\n`;
+            listaGrupos += `${numeroConEmoji(index + 1)} - ${grupo.name}\n`;
         });
         
         listaGrupos += "\nEnvía los *números* de los grupos (separados por coma):\n";
@@ -2542,7 +3128,7 @@ async function manejarOpcionExistente(message, userId, estadoUsuario) {
         let mensajeLista = "📝 *SELECCIONAR MENSAJE A EDITAR*\n\n";
         scheduledMessages.forEach((msg, index) => {
             const mensajeCorto = msg.mensaje ? (msg.mensaje.length > 30 ? msg.mensaje.substring(0, 30) + '...' : msg.mensaje) : '(sin texto)';
-            mensajeLista += `${index + 1}. Horas: ${msg.horas.join(', ')} - Mensaje: ${mensajeCorto}\n`;
+            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')} - Mensaje: ${mensajeCorto}\n`;
         });
         
         mensajeLista += "\nEnvía el número del mensaje que quieres editar:";
@@ -2557,7 +3143,7 @@ async function manejarOpcionExistente(message, userId, estadoUsuario) {
         
         let mensajeLista = "🗑️ *SELECCIONAR MENSAJE A ELIMINAR*\n\n";
         scheduledMessages.forEach((msg, index) => {
-            mensajeLista += `${index + 1}. Horas: ${msg.horas.join(', ')} - Creado: ${moment(msg.fechaCreacion).tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
+            mensajeLista += `${numeroConEmoji(index + 1)}. Horas: ${msg.horas.join(', ')} - Creado: ${moment(msg.fechaCreacion).tz(TIMEZONE).format('DD/MM/YYYY HH:mm')}\n`;
         });
         
         mensajeLista += "\nEnvía el número del mensaje que quieres eliminar:";
@@ -2718,6 +3304,7 @@ async function enviarBienvenidaGrupo(chat) {
             `• Consultar información SKAP 📋\n` +
             `• Acceder a checklists de seguridad ✅\n` +
             `• Consultar reclamos de calidad 📊\n` +
+            `• Consultar CIP Jarabe Terminado 🧪\n` +
             `• Y mucho más...\n\n` +
             `*⚠️ IMPORTANTE:*\n` +
             `Solo responderé cuando uses el comando */menu* o */menú* primero.\n\n` +
@@ -2741,7 +3328,36 @@ async function manejarEstadoUsuario(message, userId) {
         return;
     }
     
-    // MANEJO DE ESTADOS DE GUARDIAN
+    if (estadoUsuario.estado === 'cip_esperando_tanque') {
+        await manejarSeleccionTanque(message, userId, estadoUsuario);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'cip_esperando_tipo_busqueda') {
+        await manejarTipoBusqueda(message, userId, estadoUsuario);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'cip_esperando_rango_fechas') {
+        await manejarRangoFechas(message, userId, estadoUsuario);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'cip_esperando_mes') {
+        await manejarSeleccionMes(message, userId, estadoUsuario);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'cip_esperando_anio') {
+        await manejarSeleccionAnio(message, userId, estadoUsuario);
+        return;
+    }
+    
+    if (estadoUsuario.estado === 'cip_esperando_formato_descarga') {
+        await manejarFormatoDescarga(message, userId, estadoUsuario);
+        return;
+    }
+    
     if (estadoUsuario.estado === 'guardian_esperando_codigo') {
         const codigo = message.body.trim();
         
@@ -2759,7 +3375,7 @@ async function manejarEstadoUsuario(message, userId) {
         
         let menuAños = `📅 *SELECCIONA EL AÑO*\n\n`;
         años.forEach((año, index) => {
-            menuAños += `${index + 1}️⃣ - ${año}\n`;
+            menuAños += `${numeroConEmoji(index + 1)} - ${año}\n`;
         });
         
         menuAños += `\n*Envía el número del año*\nO envía *cancelar* para regresar.`;
@@ -2786,7 +3402,7 @@ async function manejarEstadoUsuario(message, userId) {
         
         let menuMeses = `📅 *SELECCIONA EL MES*\n\n`;
         MESES.forEach((mes, index) => {
-            menuMeses += `${index + 1}️⃣ - ${mes}\n`;
+            menuMeses += `${numeroConEmoji(index + 1)} - ${mes}\n`;
         });
         
         menuMeses += `\n*Envía el número del mes (1-12)*\nO envía *cancelar* para regresar.`;
@@ -3203,7 +3819,7 @@ async function enviarMenu(message) {
         `4️⃣ - *Semáforo de territorio* 🚦\n` +
         `5️⃣ - *Reclamos de calidad* 📋\n` +
         `6️⃣ - *Energía* ⚡\n` +
-        `7️⃣ - *CIP Jarabe terminado*\n` +
+        `7️⃣ - *CIP Jarabe terminado* 🧪\n` +
         `8️⃣ - *CIP Jarabe simple*\n` +
         `9️⃣ - *Programar mensajes* ⏰\n` +
         `🔟 - *SKAP* 📋\n\n` +
@@ -3216,7 +3832,6 @@ async function manejarOpcionMenu(message, opcion) {
     const links = {
         1: "https://ab-inbev.acadia.sysalli.com/documents?filter=lang-eql:es-mx&page=1&pagesize=50",
         6: "https://energia2-7e868.web.app/",
-        7: "https://cijarabe2.web.app/",
         8: "https://cip-jarabesimple.web.app/"
     };
     
@@ -3232,7 +3847,11 @@ async function manejarOpcionMenu(message, opcion) {
         await message.reply(resultado);
     } else if (opcion === 5) {
         await manejarReclamosCalidad(message, message.from);
-    } else if (opcion >= 6 && opcion <= 8) {
+    } else if (opcion === 6) {
+        await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
+    } else if (opcion === 7) {
+        await manejarCIPJarabeTerminado(message, message.from);
+    } else if (opcion === 8) {
         await message.reply(`🔗 *Enlace para la opción ${opcion}:*\n${links[opcion]}\n\n*Nota:* Haz click en el enlace para poder entrar.`);
     } else if (opcion === 9) {
         await iniciarProgramacion(message);
